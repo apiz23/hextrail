@@ -51,6 +51,13 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # apps/web imports @hextrail/sdk through its package `exports`, which point
+      # at ./dist. A clean checkout has no dist/, so the SDK must be built before
+      # anything typechecks the web app. Skipping this passes locally (where dist
+      # is already built) and fails on a fresh CI checkout.
+      - name: Build the SDK (web resolves @hextrail/sdk via dist/)
+        run: pnpm --filter @hextrail/sdk build
+
       - name: Typecheck (all packages)
         run: pnpm typecheck
 
