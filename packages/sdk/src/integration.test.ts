@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { HextrailClient } from "./client.js";
+import { HextrailClient, LOCAL_ENDPOINT } from "./client.js";
 import { HextrailError } from "./errors.js";
 import type { TraceEnvelope } from "./index.js";
 
@@ -57,9 +57,13 @@ function envelope(traceId: string, overrides: Partial<TraceEnvelope["trace"]> = 
 }
 
 describe.skipIf(!live)("live ingestion", () => {
+  // Constructed inside the guarded block, not at module scope. `endpoint` is
+  // now a required option, so building the client while the env vars are unset
+  // would throw during collection and fail the file instead of skipping it —
+  // turning "no credentials, no run" into "no credentials, red suite".
   const client = new HextrailClient({
     apiKey: apiKey ?? "hx_live_unset",
-    endpoint,
+    endpoint: endpoint ?? LOCAL_ENDPOINT,
     maxRetries: 0,
   });
 
@@ -128,7 +132,7 @@ describe.skipIf(!live)("live ingestion", () => {
   it("rejects a bad API key with 401 and does not retry", async () => {
     const unauthorised = new HextrailClient({
       apiKey: `hx_live_${"Z".repeat(43)}`,
-      endpoint,
+      endpoint: endpoint ?? LOCAL_ENDPOINT,
       maxRetries: 2,
       retryDelayMs: () => 0,
     });

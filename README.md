@@ -203,12 +203,12 @@ atomic rather than read-then-write. A naive implementation lets a burst through.
 external agent to send traces — see `packages/sdk/README.md` for the full guide.
 
 ```ts
-import { HextrailClient, type TraceEnvelope } from "@hextrail/sdk";
+import { HextrailClient, LOCAL_ENDPOINT, type TraceEnvelope } from "@hextrail/sdk";
 
 const hextrail = new HextrailClient({
   apiKey: process.env.HEXTRAIL_API_KEY!,
-  // Omit for Hextrail Cloud; point at localhost during development.
-  endpoint: "http://localhost:3000/api/v1/traces",
+  // Required — there is no hosted endpoint yet. See "Release blockers".
+  endpoint: LOCAL_ENDPOINT, // http://localhost:3000/api/v1/traces
 });
 
 const payload: TraceEnvelope = { schemaVersion: 1, trace: { /* ... */ }, spans: [] };
@@ -219,6 +219,9 @@ Design points worth knowing:
 
 - **Zero runtime dependencies.** It runs inside someone else's agent process, so
   it brings nothing with it. Node 18+, Bun, Deno, and Workers are all supported.
+- **`endpoint` is required, with no default.** Hextrail has no hosted ingestion
+  endpoint, so a missing value is a clear `TypeError` at construction rather
+  than a DNS failure at the first ingest.
 - **Retries are safe because ingestion is idempotent.** Network errors,
   timeouts, `429` and `5xx` are retried; `400`, `401`, `403` and `413` are not,
   because resending an identical bad request cannot help.
@@ -475,23 +478,25 @@ What remains:
 1. **The npm scope does not exist.** `@hextrail/sdk` returns 404 and there is no
    `hextrail` organisation — re-verified. Claiming the scope is a one-time
    manual step (`docs/RELEASING.md` §1).
-2. **The repository is not on GitHub.** CI and Trusted Publishing are configured
-   but have never executed. Until the repo is pushed, every workflow result is
-   unverified — the local checks below are not a substitute.
-3. **No GitHub Environment `npm-release`** with required reviewers. Without it
+2. **No GitHub Environment `npm-release`** with required reviewers. Without it
    the publish job cannot start (`docs/RELEASING.md` §2.3).
-4. **No Trusted Publisher configured on npm** (`docs/RELEASING.md` §3).
-5. **The ingest host does not resolve.** Verified independently:
-   `Resolve-DnsName ingest.hextrail.ai` → *DNS name does not exist*. The apex
-   `hextrail.ai` does not resolve either, so no part of the domain is live.
-   `DEFAULT_ENDPOINT` (`https://ingest.hextrail.ai/api/v1/traces`) is therefore
-   currently a host that fails at first ingest. Resolve it before publishing, or
-   make `endpoint` required so the failure is a clear config error instead of a
-   network error. `release:check` reports this as a warning — it will not stop a
-   publish, so it is a human decision.
-6. **Version is `0.1.0` and the API is not frozen.** `TraceEnvelope` is treated
+3. **No Trusted Publisher configured on npm** (`docs/RELEASING.md` §3).
+4. **Version is `0.1.0` and the API is not frozen.** `TraceEnvelope` is treated
    as append-only from here; publishing fixes it. Worth a deliberate review of
    the payload contract first.
+
+### Resolved
+
+- **The invalid default endpoint is gone.** `DEFAULT_ENDPOINT` pointed at
+  `https://ingest.hextrail.ai/api/v1/traces`. Verified independently:
+  `Resolve-DnsName ingest.hextrail.ai` → *DNS name does not exist*, and the apex
+  `hextrail.ai` does not resolve either, so no part of the domain is live.
+  The constant has been removed and `endpoint` is now a required option that is
+  validated at construction, so the failure is a named configuration error
+  instead of a network error at first ingest. `LOCAL_ENDPOINT` replaces it for
+  local development. `release:check` asserts the default cannot come back.
+- **The repository is on GitHub with CI executing on every push.** The four CI
+  jobs run against `main`; see the project status below.
 
 ## Project status
 
@@ -512,14 +517,16 @@ What remains:
 - [x] API key management — create, list, revoke; one-time secret display
 - [x] SDK built, packaged, and installed from a tarball outside the monorepo
 - [x] Bidirectional SDK↔server contract assertion (fails the build on drift)
-- [x] Release gate — 60 checks against the real tarball; secrets, fixtures and workspace deps excluded (verified locally)
+- [x] Release gate — 65 checks against the real tarball; secrets, fixtures and workspace deps excluded
 - [x] Publish workflow on npm Trusted Publishing over OIDC, gated on approval (never executed)
+- [x] CI on GitHub — typecheck, lint, tests, SDK↔server contract, Next.js build, package gate. Green on `main`
+- [x] Public and dashboard routes split into route groups; the shell no longer renders for signed-out visitors
+- [x] No default ingestion endpoint — `endpoint` is required and validated at construction
 - [ ] Sign-up flow
 - [ ] Project creation UI
 - [ ] Exact totals and full-history aggregates
 - [ ] SDK published to npm
 - [ ] Integration suite running in CI against an isolated test project
-- [ ] End-to-end auth/layout fix — signed-out users currently still see the app shell
 
 Do not use this project to ingest real prompts, secrets, or production
 telemetry. Redaction reduces accidental credential leakage; it is not PII

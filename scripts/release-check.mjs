@@ -577,7 +577,7 @@ if (tarballPath && existsSync(tarballPath)) {
     writeFileSync(
       smokePath,
       `
-import { HextrailClient, HextrailError, DEFAULT_ENDPOINT, getDurationMs } from "${pkg.name}";
+import { HextrailClient, HextrailError, LOCAL_ENDPOINT, getDurationMs } from "${pkg.name}";
 import { SCHEMA_VERSION, TRACE_STATUSES } from "${pkg.name}/schema";
 
 const fails = [];
@@ -585,10 +585,22 @@ const assert = (cond, msg) => { if (!cond) fails.push(msg); };
 
 assert(typeof HextrailClient === "function", "HextrailClient is not a constructor");
 assert(typeof HextrailError === "function", "HextrailError is not a constructor");
-assert(typeof DEFAULT_ENDPOINT === "string", "DEFAULT_ENDPOINT is not a string");
+assert(typeof LOCAL_ENDPOINT === "string", "LOCAL_ENDPOINT is not a string");
+assert(LOCAL_ENDPOINT.endsWith("/api/v1/traces"), "LOCAL_ENDPOINT does not target the ingest route");
 assert(getDurationMs("2026-10-15T10:00:00.000Z", "2026-10-15T10:00:01.000Z") === 1000, "getDurationMs wrong");
 assert(SCHEMA_VERSION === 1, "SCHEMA_VERSION wrong");
 assert(Array.isArray(TRACE_STATUSES), "TRACE_STATUSES is not an array");
+
+// Omitting the endpoint must be a clear, immediate configuration error - the
+// behaviour that replaced defaulting to a host that does not resolve.
+try {
+  new HextrailClient({ apiKey: "hx_live_" + "A".repeat(43) });
+  fails.push("omitting the endpoint should throw");
+} catch (error) {
+  assert(error instanceof TypeError, "missing endpoint should throw a TypeError");
+  assert(/endpoint/.test(error.message), "missing endpoint error should name the option");
+  assert(!error.message.includes("hx_live_"), "endpoint error must not echo the API key");
+}
 
 // Errors must cross the package boundary as real HextrailError instances.
 const client = new HextrailClient({ apiKey: "hx_live_" + "A".repeat(43), endpoint: "http://127.0.0.1:9/x", maxRetries: 0 });
@@ -659,7 +671,22 @@ const envelope: TraceEnvelope = {
 
 const status: TraceStatus = "running";
 const version: 1 = SCHEMA_VERSION;
-const client = new HextrailClient({ apiKey: "hx_live_x", maxRetries: 0 });
+
+// The endpoint option is required; a consumer must supply one. This line is
+// the positive case - it must compile.
+const client = new HextrailClient({
+  apiKey: "hx_live_x",
+  endpoint: "https://traces.example.com/api/v1/traces",
+  maxRetries: 0,
+});
+
+// The negative case: omitting the endpoint must be a compile-time error, not a
+// runtime surprise. Marked @ts-expect-error, so if the option ever became
+// optional again this line stops erroring and tsc reports the now-unused
+// suppression - which fails the check.
+// @ts-expect-error - the endpoint option is required.
+const missingEndpoint = new HextrailClient({ apiKey: "hx_live_x" });
+void missingEndpoint;
 
 async function send(): Promise<IngestResponse> {
   try {
@@ -706,35 +733,70 @@ void status; void version; void send;
 /* 8. endpoint configuration must stay explicit                                */
 /* -------------------------------------------------------------------------- */
 
-section("default endpoint (must stay explicit until verified)");
+section("endpoint configuration (explicit, no unverified default)");
 
 const clientSource = readFileSync(join(SDK_DIR, "src", "client.ts"), "utf8");
-const defaultEndpointMatch = /DEFAULT_ENDPOINT\s*=\s*"([^"]+)"/.exec(clientSource);
 
-if (!defaultEndpointMatch) {
-  warn("DEFAULT_ENDPOINT not found in src/client.ts", "check manually");
-} else {
-  const endpoint = defaultEndpointMatch[1];
-  ok("DEFAULT_ENDPOINT is declared", endpoint);
+// Hextrail has no hosted ingestion endpoint. An earlier release defaulted to
+// ingest.hextrail.ai, which does not resolve; the fix was to require the
+// option. This section now guards against that regressing: the package must
+// not ship a default that points somewhere unverified.
 
-  // Nothing here can verify DNS or hosting from a build machine, and a publish
-  // would make an unverified host someone else's default. So the requirement
-  // enforced is that the endpoint is *documented as unverified* and that a
-  // caller can always override it.
-  check(
-    /endpoint\?:/.test(clientSource),
-    "endpoint is user-configurable (not hard-coded only)",
-  );
+check(
+  !/export\s+const\s+DEFAULT_ENDPOINT/.test(clientSource),
+  "no DEFAULT_ENDPOINT export (an unverified default must not ship)",
+);
 
+check(
+  /endpoint:\s*string;/.test(clientSource),
+  "`endpoint` is a required option, not optional",
+);
+
+check(
+  /function\s+resolveEndpoint\s*\(/.test(clientSource),
+  "endpoint is validated before use",
+);
+
+// A missing endpoint must fail loudly and name the option, and must not echo
+// any part of the key while doing so.
+check(
+  /endpoint` is required/.test(clientSource),
+  "missing endpoint produces a message naming the option",
+);
+
+{
   const readme = readFileSync(join(SDK_DIR, "README.md"), "utf8");
+
   check(
-    /endpoint/i.test(readme),
-    "README documents how to override the endpoint",
+    /Why `endpoint` is required/.test(readme),
+    "README explains why there is no default endpoint",
   );
 
-  warn(
-    "DEFAULT_ENDPOINT is NOT verified to resolve",
-    `${endpoint} â€” confirm DNS and hosting before publishing`,
+  check(
+    /LOCAL_ENDPOINT/.test(readme),
+    "README documents LOCAL_ENDPOINT for local development",
+  );
+
+  // The retired host must not reappear in the docs as something to use.
+  check(
+    !/endpoint.*ingest\.hextrail\.ai/i.test(readme),
+    "README does not present the dead ingest.hextrail.ai host as usable",
+  );
+}
+
+// The constant that replaces the old default must exist and point at the
+// route the web app actually serves.
+const localEndpointMatch = /export\s+const\s+LOCAL_ENDPOINT\s*=\s*"([^"]+)"/.exec(
+  clientSource,
+);
+
+if (!localEndpointMatch) {
+  warn("LOCAL_ENDPOINT not found in src/client.ts", "check manually");
+} else {
+  ok("LOCAL_ENDPOINT is declared", localEndpointMatch[1]);
+  check(
+    localEndpointMatch[1] === "http://localhost:3000/api/v1/traces",
+    "LOCAL_ENDPOINT matches the web app's ingestion route",
   );
 }
 

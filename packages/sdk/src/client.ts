@@ -32,12 +32,21 @@ export interface HextrailClientOptions {
    */
   apiKey: string;
   /**
-   * Ingest endpoint. Defaults to Hextrail Cloud.
+   * Ingest endpoint. Required.
    *
-   * Point this at `http://localhost:3000/api/v1/traces` for local development.
-   * A trailing slash is tolerated.
+   * There is no default. Hextrail has no hosted ingestion endpoint yet — the
+   * `ingest.hextrail.ai` host in earlier versions of this package was never
+   * provisioned and does not resolve in DNS. Defaulting to it turned a
+   * configuration mistake into a DNS failure at the first `ingestTrace`, with
+   * nothing in the error to say so.
+   *
+   * Requiring it moves that failure to construction time, where it belongs and
+   * where the message can name the missing option.
+   *
+   * Must be an absolute `http`/`https` URL. A trailing slash is tolerated.
+   * Use `LOCAL_ENDPOINT` for a Hextrail instance running on this machine.
    */
-  endpoint?: string;
+  endpoint: string;
   /** Per-attempt timeout in milliseconds. Defaults to 10_000. */
   timeoutMs?: number;
   /**
@@ -55,7 +64,15 @@ export interface HextrailClientOptions {
   fetch?: typeof fetch;
 }
 
-export const DEFAULT_ENDPOINT = "https://ingest.hextrail.ai/api/v1/traces";
+/**
+ * The ingestion route served by `apps/web` when you run Hextrail locally.
+ *
+ * Exported so the local-development flow is a one-liner rather than a URL
+ * people retype — which is how a wrong host gets copied between projects.
+ * Production callers pass their own deployed endpoint.
+ */
+export const LOCAL_ENDPOINT = "http://localhost:3000/api/v1/traces";
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 30_000;
@@ -100,6 +117,48 @@ function parseRetryAfter(header: string | null, now: number): number | null {
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Validates and normalises the configured endpoint.
+ *
+ * Throws a `TypeError` naming the option rather than letting a bad value
+ * through to become a confusing transport error later. The checks are for
+ * mistakes worth catching early — a missing value, a relative path, a typo'd
+ * scheme, an unparseable string — not an attempt to police URLs.
+ */
+function resolveEndpoint(endpoint: unknown): string {
+  if (typeof endpoint !== "string" || endpoint.trim() === "") {
+    throw new TypeError(
+      "HextrailClient: `endpoint` is required. Hextrail has no hosted ingestion " +
+        "endpoint yet, so there is no default to fall back on. Pass the full " +
+        "ingest URL, e.g. `endpoint: LOCAL_ENDPOINT` against a local Hextrail, " +
+        "or the `https://<host>/api/v1/traces` of your deployment.",
+    );
+  }
+
+  // Tolerate a trailing slash so a copy-pasted URL does not double up.
+  const trimmed = endpoint.trim().replace(/\/+$/, "");
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    // The value is echoed here on purpose: an endpoint is not a secret, and
+    // showing it is what makes a typo findable.
+    throw new TypeError(
+      `HextrailClient: \`endpoint\` is not a valid absolute URL (received ${JSON.stringify(trimmed)}). ` +
+        "Expected something like `https://your-host/api/v1/traces`.",
+    );
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new TypeError(
+      `HextrailClient: \`endpoint\` must use http or https (received ${JSON.stringify(parsed.protocol)}).`,
+    );
+  }
+
+  return trimmed;
+}
+
 export class HextrailClient {
   readonly #apiKey: string;
   readonly #endpoint: string;
@@ -109,6 +168,15 @@ export class HextrailClient {
   readonly #fetch: typeof fetch;
 
   constructor(options: HextrailClientOptions) {
+    // A JavaScript caller can omit the argument entirely. Guard before the
+    // destructure, otherwise the failure is a bare "cannot read property of
+    // undefined" that says nothing about what was missing.
+    if (options === null || typeof options !== "object") {
+      throw new TypeError(
+        "HextrailClient: an options object is required, with `apiKey` and `endpoint`.",
+      );
+    }
+
     const { apiKey, endpoint, timeoutMs, maxRetries, retryDelayMs, fetch } =
       options;
 
@@ -130,8 +198,7 @@ export class HextrailClient {
     }
 
     this.#apiKey = apiKey.trim();
-    // Tolerate a trailing slash so a copy-pasted URL does not double up.
-    this.#endpoint = (endpoint ?? DEFAULT_ENDPOINT).replace(/\/+$/, "");
+    this.#endpoint = resolveEndpoint(endpoint);
     this.#timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#maxRetries = maxRetries ?? DEFAULT_MAX_RETRIES;
     this.#retryDelay = retryDelayMs ?? defaultRetryDelay;

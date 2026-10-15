@@ -14,7 +14,7 @@
 
 export {
   HextrailClient,
-  DEFAULT_ENDPOINT,
+  LOCAL_ENDPOINT,
   type HextrailClientOptions,
 } from "./client.js";
 export {

@@ -18,11 +18,16 @@ None of these are code problems. All are account/infrastructure state.
 | # | Blocker | Where it is resolved |
 |---|---|---|
 | 1 | The `@hextrail` npm scope does not exist | npmjs.com — §1 |
-| 2 | The repository is not on GitHub, so there are no Actions | §2 |
-| 3 | No GitHub Environment `npm-release` with required reviewers | §2 |
-| 4 | No Trusted Publisher configured on the npm package | §3 |
-| 5 | `DEFAULT_ENDPOINT` (`https://ingest.hextrail.ai/api/v1/traces`) does not resolve | §5 |
-| 6 | The wire contract is not frozen; version is `0.1.0` | §6 |
+| 2 | No GitHub Environment `npm-release` with required reviewers | §2 |
+| 3 | No Trusted Publisher configured on the npm package | §3 |
+| 4 | The wire contract is not frozen; version is `0.1.0` | §6 |
+
+Resolved and no longer blocking:
+
+| # | Was | Resolution |
+|---|---|---|
+| ~~2~~ | The repository was not on GitHub, so no Actions ran | Pushed to `github.com/apiz23/hextrail`; the four CI jobs run on every push to `main` |
+| ~~5~~ | `DEFAULT_ENDPOINT` (`https://ingest.hextrail.ai/api/v1/traces`) did not resolve | The default was removed; `endpoint` is now required and validated — §5 |
 
 ---
 
@@ -201,29 +206,44 @@ still refuses to republish an existing version.
 
 ---
 
-## 5. Endpoint: unverified, and why it matters
+## 5. Endpoint: resolved by removing the default
 
-`DEFAULT_ENDPOINT` is `https://ingest.hextrail.ai/api/v1/traces`. **This host
-does not resolve.** DNS is not configured and no ingestion host is provisioned.
+**Status: closed.** This was a release blocker and is no longer one.
 
-Publishing with this default makes a host nobody has verified the default for
-every consumer: a developer who constructs the client without passing `endpoint`
-gets a DNS failure at first ingest with nothing in the message explaining why.
+The package used to export `DEFAULT_ENDPOINT` =
+`https://ingest.hextrail.ai/api/v1/traces`. That host was never provisioned and
+does not resolve in DNS (verified: `Resolve-DnsName ingest.hextrail.ai` → *DNS
+name does not exist*; the apex `hextrail.ai` does not resolve either). A
+consumer who constructed the client without an `endpoint` got a DNS failure at
+their first `ingestTrace`, with nothing in the error naming the endpoint as the
+cause.
 
-Two acceptable resolutions before publishing:
+Resolution taken, of the two that were open:
 
-1. **Provision the host** — point `ingest.hextrail.ai` at the deployed ingestion
-   API over HTTPS, and verify with
-   `curl -sS -o /dev/null -w '%{http_code}' https://ingest.hextrail.ai/api/v1/traces`
-   (expect `401`/`405` for an unauthenticated `GET`, not a connection error).
-2. **Remove the default** — make `endpoint` a required option so the failure is
-   a clear configuration error at construction time rather than a network error
-   at first use.
+- **Removed the default.** `endpoint` is now a required option.
+  `DEFAULT_ENDPOINT` no longer exists; `LOCAL_ENDPOINT` is exported for local
+  development and is a constant, not a fallback.
+- The value is validated at construction: must be present, must parse as an
+  absolute URL, and must be `http` or `https`. A missing or malformed value
+  throws a `TypeError` naming the option, so the failure happens before any
+  trace is lost.
 
-Either is fine. Publishing while the default resolves nowhere is not.
+Reintroducing a hosted default is still a valid future move — but only after the
+host exists. Verify with:
 
-The `release:check` script reports this as a warning and fails nothing, so it
-will not stop a publish. It is a judgement call a person has to make.
+```bash
+curl -sS -o /dev/null -w '%{http_code}' https://ingest.hextrail.ai/api/v1/traces
+```
+
+Expect `401`/`405` for an unauthenticated `GET`, not a connection error. Only
+then bring back a default, and re-enable the corresponding check.
+
+`release:check` now asserts all of the above: that no `DEFAULT_ENDPOINT` is
+exported, that `endpoint` is required rather than optional, that validation
+runs, that the missing-endpoint message names the option and leaks no key, that
+the README does not present the dead host as usable, and — through the external
+consumer typecheck — that omitting `endpoint` is a compile-time error. There is
+no warning left in this section.
 
 ---
 

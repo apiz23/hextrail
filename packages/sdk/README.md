@@ -46,6 +46,8 @@ import { HextrailClient, type TraceEnvelope } from "@hextrail/sdk";
 
 const hextrail = new HextrailClient({
   apiKey: process.env.HEXTRAIL_API_KEY!,
+  // Required — Hextrail has no hosted endpoint yet. See "Options" below.
+  endpoint: process.env.HEXTRAIL_ENDPOINT!,
 });
 
 const startedAt = new Date();
@@ -82,12 +84,26 @@ console.log(result.traceId, result.duplicate);
 
 ### Local development
 
-Point the client at your own Hextrail instance:
+Run the Hextrail web app (`pnpm --filter web dev` in the repository) and use the
+exported `LOCAL_ENDPOINT`, which addresses its ingestion route in one import:
+
+```ts
+import { HextrailClient, LOCAL_ENDPOINT } from "@hextrail/sdk";
+
+const hextrail = new HextrailClient({
+  apiKey: process.env.HEXTRAIL_API_KEY!,
+  endpoint: LOCAL_ENDPOINT, // http://localhost:3000/api/v1/traces
+});
+```
+
+`LOCAL_ENDPOINT` is a constant, not a default — nothing is inferred when
+`endpoint` is omitted. Point it at a different origin when the app is not on
+port 3000:
 
 ```ts
 const hextrail = new HextrailClient({
   apiKey: process.env.HEXTRAIL_API_KEY!,
-  endpoint: "http://localhost:3000/api/v1/traces",
+  endpoint: `${process.env.HEXTRAIL_BASE_URL ?? "http://localhost:3000"}/api/v1/traces`,
 });
 ```
 
@@ -132,11 +148,31 @@ const result = await hextrail
 | Option | Default | Notes |
 | --- | --- | --- |
 | `apiKey` | — | Required. Must start with `hx_live_`. |
-| `endpoint` | `https://ingest.hextrail.ai/api/v1/traces` | A trailing slash is tolerated. |
+| `endpoint` | — | **Required.** Absolute `http`/`https` ingest URL. A trailing slash is tolerated. |
 | `timeoutMs` | `10000` | Per attempt, not per call. |
 | `maxRetries` | `2` | Extra attempts. Total attempts = `maxRetries + 1`. |
 | `retryDelayMs` | exponential + jitter | Override the backoff. |
 | `fetch` | global `fetch` | Injectable for testing. |
+
+### Why `endpoint` is required
+
+Hextrail does not host a public ingestion endpoint yet. Earlier `0.1.x`
+releases defaulted to `https://ingest.hextrail.ai/api/v1/traces`; that host was
+never provisioned and does not resolve in DNS. Defaulting to it converted a
+missing configuration into a DNS failure at your first `ingestTrace`, with an
+error that never mentioned the endpoint.
+
+`endpoint` is now required, so a missing or malformed value fails at
+construction with a message naming the option — before any trace is lost:
+
+```ts
+new HextrailClient({ apiKey: process.env.HEXTRAIL_API_KEY! });
+// TypeError: HextrailClient: `endpoint` is required. Hextrail has no hosted
+// ingestion endpoint yet, so there is no default to fall back on. …
+```
+
+`LOCAL_ENDPOINT` is exported for local development (see below). For a deployed
+Hextrail, pass your own ingest URL.
 
 ## Retries and idempotency
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HextrailClient, DEFAULT_ENDPOINT } from "./client.js";
+import { HextrailClient, LOCAL_ENDPOINT } from "./client.js";
 import { HextrailError } from "./errors.js";
 import type { TraceEnvelope } from "./index.js";
 
@@ -110,34 +110,157 @@ afterEach(() => {
 
 describe("construction", () => {
   it("rejects a missing or blank API key", () => {
-    expect(() => new HextrailClient({ apiKey: "" })).toThrow(TypeError);
-    expect(() => new HextrailClient({ apiKey: "   " })).toThrow(TypeError);
+    // `endpoint` is supplied in every case so the failure can only be the key.
+    expect(
+      () => new HextrailClient({ apiKey: "", endpoint: LOCAL_ENDPOINT }),
+    ).toThrow(/apiKey.*required/i);
+    expect(
+      () => new HextrailClient({ apiKey: "   ", endpoint: LOCAL_ENDPOINT }),
+    ).toThrow(/apiKey.*required/i);
     // @ts-expect-error - runtime guard for JavaScript callers.
-    expect(() => new HextrailClient({})).toThrow(TypeError);
+    expect(() => new HextrailClient({ endpoint: LOCAL_ENDPOINT })).toThrow(
+      /apiKey.*required/i,
+    );
+  });
+
+  it("rejects a missing options object for a JavaScript caller", () => {
+    // @ts-expect-error - runtime guard for JavaScript callers.
+    expect(() => new HextrailClient()).toThrow(/options object is required/i);
+    // @ts-expect-error - runtime guard for JavaScript callers.
+    expect(() => new HextrailClient(null)).toThrow(
+      /options object is required/i,
+    );
   });
 
   it("rejects a key that is not a Hextrail key", () => {
     expect(
-      () => new HextrailClient({ apiKey: "sk-proj-something-else" }),
+      () =>
+        new HextrailClient({
+          apiKey: "sk-proj-something-else",
+          endpoint: LOCAL_ENDPOINT,
+        }),
     ).toThrow(/hx_live_/);
   });
 
   it("never echoes the key in the error it throws", () => {
     const secret = "sk-leak-me-please-1234567890";
     try {
-      new HextrailClient({ apiKey: secret });
+      new HextrailClient({ apiKey: secret, endpoint: LOCAL_ENDPOINT });
       throw new Error("expected the constructor to throw");
     } catch (error) {
       expect(String((error as Error).message)).not.toContain(secret);
     }
   });
 
-  it("defaults to the Hextrail endpoint", () => {
+  it("requires an endpoint, since there is no hosted default", () => {
+    // The package previously defaulted to https://ingest.hextrail.ai, a host
+    // that has never resolved. Omitting `endpoint` must now fail immediately
+    // and say which option is missing.
+    expect(
+      // @ts-expect-error - runtime guard for JavaScript callers.
+      () => new HextrailClient({ apiKey: API_KEY }),
+    ).toThrow(/endpoint.*required/i);
+  });
+
+  it("names `endpoint` in the error, not the key", () => {
+    try {
+      // @ts-expect-error - runtime guard for JavaScript callers.
+      new HextrailClient({ apiKey: API_KEY });
+      throw new Error("expected the constructor to throw");
+    } catch (error) {
+      const message = String((error as Error).message);
+      expect(message).toContain("endpoint");
+      // A configuration error must not become a key-disclosure vector.
+      expect(message).not.toContain(API_KEY);
+    }
+  });
+
+  it("rejects a blank endpoint", () => {
+    expect(
+      () => new HextrailClient({ apiKey: API_KEY, endpoint: "" }),
+    ).toThrow(/endpoint.*required/i);
+    expect(
+      () => new HextrailClient({ apiKey: API_KEY, endpoint: "   " }),
+    ).toThrow(/endpoint.*required/i);
+  });
+
+  it("rejects a relative path", () => {
+    expect(
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: "/api/v1/traces",
+        }),
+    ).toThrow(/not a valid absolute URL/);
+  });
+
+  it("rejects a URL with no scheme", () => {
+    expect(
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: "ingest.example.com/api/v1/traces",
+        }),
+    ).toThrow(/not a valid absolute URL/);
+  });
+
+  it("rejects a non-http scheme", () => {
+    expect(
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: "ftp://example.com/api/v1/traces",
+        }),
+    ).toThrow(/must use http or https/);
+    expect(
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: "file:///tmp/traces",
+        }),
+    ).toThrow(/must use http or https/);
+  });
+
+  it("echoes a malformed endpoint so a typo is findable", () => {
+    // An endpoint is not a secret — unlike the key, it belongs in the message.
+    expect(
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: "not a url at all",
+        }),
+    ).toThrow(/not a url at all/);
+  });
+
+  it("accepts LOCAL_ENDPOINT unchanged", () => {
     const client = new HextrailClient({
       apiKey: API_KEY,
+      endpoint: LOCAL_ENDPOINT,
       fetch: vi.fn() as never,
     });
-    expect(client.endpoint).toBe(DEFAULT_ENDPOINT);
+    expect(client.endpoint).toBe("http://localhost:3000/api/v1/traces");
+  });
+
+  it("accepts an https endpoint", () => {
+    const client = new HextrailClient({
+      apiKey: API_KEY,
+      endpoint: "https://traces.example.com/api/v1/traces",
+      fetch: vi.fn() as never,
+    });
+    expect(client.endpoint).toBe(
+      "https://traces.example.com/api/v1/traces",
+    );
+  });
+
+  it("trims surrounding whitespace on an endpoint", () => {
+    const client = new HextrailClient({
+      apiKey: API_KEY,
+      endpoint: "  https://traces.example.com/api/v1/traces  ",
+      fetch: vi.fn() as never,
+    });
+    expect(client.endpoint).toBe(
+      "https://traces.example.com/api/v1/traces",
+    );
   });
 
   it("tolerates a trailing slash on a custom endpoint", () => {
@@ -151,10 +274,20 @@ describe("construction", () => {
 
   it("rejects nonsensical numeric options", () => {
     expect(
-      () => new HextrailClient({ apiKey: API_KEY, timeoutMs: 0 }),
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: LOCAL_ENDPOINT,
+          timeoutMs: 0,
+        }),
     ).toThrow(TypeError);
     expect(
-      () => new HextrailClient({ apiKey: API_KEY, maxRetries: -1 }),
+      () =>
+        new HextrailClient({
+          apiKey: API_KEY,
+          endpoint: LOCAL_ENDPOINT,
+          maxRetries: -1,
+        }),
     ).toThrow(TypeError);
   });
 });
