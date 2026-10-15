@@ -8,7 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { LoginForm } from "@/app/login/login-form";
+import { LoginForm } from "@/app/(auth)/login/login-form";
 import { getSession } from "@/lib/auth/session";
 import { safeNext } from "@/lib/auth/next-path";
 
@@ -22,8 +22,11 @@ export default async function LoginPage({
 
   const params = await searchParams;
 
+  // The `(auth)` layout supplies the full-height column, so this only has to
+  // centre the card inside it. Previously this said `min-h-[80vh]` because the
+  // root layout wrapped it in a shell with a 56px top bar; there is no bar now.
   return (
-    <div className="flex min-h-[80vh] items-center justify-center px-4">
+    <div className="flex flex-1 items-center justify-center px-4 py-10">
       <Card className="w-full max-w-sm">
         <CardHeader className="space-y-2">
           <span

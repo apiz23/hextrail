@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { DM_Mono, Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
-import { AppShell } from "@/components/app-shell";
-import { getSession } from "@/lib/auth/session";
-import { listProjects } from "@/lib/queries/traces";
 import "./globals.css";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
@@ -18,42 +15,29 @@ export const metadata: Metadata = {
   description: "Inspect AI agent execution traces and debug failures.",
 };
 
-export default async function RootLayout({
+/**
+ * Root layout.
+ *
+ * Deliberately knows nothing about the session. It renders only the document
+ * shell — `<html>`, `<body>`, fonts — so its output is identical for every
+ * visitor. Anything session-dependent lives in a nested layout under a route
+ * group, which is what keeps the two render trees from disagreeing.
+ *
+ * This used to call `getSession()` and render the dashboard shell for
+ * everyone. That meant `/login` rendered a sidebar for a signed-out visitor,
+ * and because the root layout's output depended on a cookie, the server HTML
+ * and the client's first render could differ — a hydration mismatch with no
+ * way to fix it except by removing the session read from here.
+ */
+export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  // Resolve the session once per render and hand the shell a plain user object.
-  // A signed-out visitor gets an empty shell: no project data is fetched, and
-  // there is nothing here that could leak.
-  const session = await getSession();
-
-  // One query, and a failure yields an empty list rather than crashing the
-  // shell — the pages themselves surface the error state.
-  const projectResult = session ? await listProjects(session.user) : null;
-  const projects = projectResult?.ok ? projectResult.data : [];
-
   return (
     <html
       lang="en"
       className={cn("dark", "font-sans", geist.variable, dmMono.variable)}
     >
-      <body>
-        <AppShell
-          user={
-            session
-              ? {
-                  email: session.user.email,
-                  displayName: session.user.displayName,
-                }
-              : { email: "Not signed in", displayName: null }
-          }
-          projects={projects.map((project) => ({
-            id: project.id,
-            name: project.name,
-          }))}
-        >
-          {children}
-        </AppShell>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
