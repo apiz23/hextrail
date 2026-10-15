@@ -1,0 +1,21 @@
+{
+  "name": "hextrail",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.18.0",
+  "scripts": {
+    "dev": "pnpm --filter @hextrail/web dev",
+    "build": "pnpm --filter @hextrail/sdk build && pnpm --filter @hextrail/web build",
+    "build:sdk": "pnpm --filter @hextrail/sdk build",
+    "lint": "pnpm --filter @hextrail/web lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "release:check": "node scripts/release-check.mjs",
+    "release:check:quick": "node scripts/release-check.mjs --skip-install",
+    "release:preview": "pnpm --filter @hextrail/sdk exec npm pack --dry-run"
+  },
+
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

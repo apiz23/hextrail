@@ -1,0 +1,33 @@
+# Normalise line endings in the repository, whatever the checkout platform.
+#
+# Without this, Git on Windows rewrites text files to CRLF on checkout, and the
+# committed bytes depend on who committed last. That matters here because CI
+# runs on Linux: a file that is CRLF in the index but expected to be LF can
+# change lint and formatter results between a local run and CI.
+#
+# `text=auto` stores LF in the repository and lets Git choose LF on checkout for
+# text files, so what CI reads is what was committed.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to run under cmd.exe.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files are never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.tgz binary
+
+# Keep lockfiles byte-stable: a line-ending rewrite makes a spurious diff that
+# hides real dependency changes.
+pnpm-lock.yaml -text

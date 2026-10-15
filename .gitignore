@@ -1,0 +1,25 @@
+node_modules
+.next
+out
+dist
+coverage
+.turbo
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+!.env.example
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Packed tarballs must never be committed; they are release artifacts.
+*.tgz
+
+# Verification scratch files.
+*.tmp.mjs
+*.tmp.cjs

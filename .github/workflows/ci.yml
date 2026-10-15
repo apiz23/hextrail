@@ -1,0 +1,164 @@
+name: CI
+
+# Runs on every pull request and every push to main. This workflow is safe for
+# forks: it holds no repository secrets and reads no `.env` file. It never
+# contacts the live Supabase project or the ingestion endpoint, so an untrusted
+# PR cannot exfiltrate credentials through it — there are none to reach.
+#
+# Credential-gated tests (see "Unit tests" below) are skipped here by design.
+# Their skip lines stay visible in the log so a green run never implies live
+# coverage it did not have.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref. PR pushes are frequent; only the
+# newest matters.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep pnpm and Next.js quiet and deterministic on CI.
+  CI: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate: install, typecheck, lint, and run the test suite once.
+  # Later jobs depend on this instead of repeating the install.
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Typecheck, lint, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from package.json `packageManager`, so CI and local
+        # runs cannot drift.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all packages)
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        # Credential-gated suites skip without their env vars. `--reporter=verbose`
+        # prints the skipped specs, so the skips are auditable rather than silent.
+        run: pnpm test -- --reporter=verbose
+
+  # ---------------------------------------------------------------------------
+  # The SDK/server contract. This is the check that catches drift between the
+  # published wire types and the server's runtime validation, so it runs as its
+  # own job: a failure here names the contract, not "the tests".
+  # ---------------------------------------------------------------------------
+  contract:
+    name: SDK/server schema contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # The assertion lives in apps/web and is enforced by the compiler, so the
+      # SDK must be built first — apps/web resolves @hextrail/sdk through its
+      # dist/ exports, not through source.
+      - name: Build the SDK
+        run: pnpm --filter @hextrail/sdk build
+
+      - name: Assert the contract types agree
+        run: pnpm --filter @hextrail/web typecheck
+
+      - name: Run the schema tests
+        run: pnpm --filter @hextrail/web exec vitest run src/lib/ingestion/schema.test.ts
+
+  # ---------------------------------------------------------------------------
+  # Build the deployable web app with no secrets present, proving the build
+  # does not depend on ambient credentials.
+  # ---------------------------------------------------------------------------
+  build-web:
+    name: Next.js production build
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (SDK then web)
+        # No Supabase env is provided on purpose. The app is server-rendered and
+        # the service client is constructed lazily, so the build must succeed
+        # without credentials. If it ever stops doing so, that is a real bug.
+        run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # Release gate for the published artifact. `release-check.mjs` builds the SDK,
+  # packs the exact tarball npm would upload, inspects its contents, scans for
+  # credentials, and installs it into a clean consumer project — then type-checks
+  # that consumer with skipLibCheck:false.
+  # ---------------------------------------------------------------------------
+  package:
+    name: Package build and tarball inspection
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          # `npm pack` inside the release check needs a registry only for
+          # `npm install` of the tarball; point it at the public registry
+          # explicitly so a fork's inherited config cannot redirect it.
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Run release checks (packs, inspects, installs, typechecks)
+        # Never pass --skip-install here: the clean-consumer install is the most
+        # valuable check in the script and must not be silently skipped in CI.
+        run: node scripts/release-check.mjs
+
+      - name: Upload the packed tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-tarball
+          path: packages/sdk/*.tgz
+          if-no-files-found: ignore
+          retention-days: 7

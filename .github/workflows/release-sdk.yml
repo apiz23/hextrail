@@ -1,0 +1,174 @@
+name: Release SDK
+
+# Publishes `@hextrail/sdk` to npm using Trusted Publishing (OIDC).
+#
+# ---------------------------------------------------------------------------
+# DO NOT ENABLE UNTIL THE PREREQUISITES IN docs/RELEASING.md ARE DONE.
+# ---------------------------------------------------------------------------
+#
+# This workflow is inert as written: it is manual-dispatch only, and its publish
+# job is bound to a GitHub Environment (`npm-release`) that must be created with
+# required reviewers. Until that environment exists and has an approval rule,
+# the publish step cannot run. See docs/RELEASING.md §1–§4.
+#
+# No npm token is used, stored, or required. `id-token: write` mints a
+# short-lived OIDC token that npm exchanges for publish rights, so there is no
+# long-lived credential to leak or rotate. That scope is granted ONLY to the
+# publish job, not workflow-wide.
+#
+# Optional public publishing is enabled by
+#   - packages/sdk/package.json  "publishConfig": { "access": "public" }
+#   - npm trust config on the package (see docs/RELEASING.md §3)
+on:
+  # Manual trigger only. A tag push is the intended release gesture, but the
+  # tag path stays commented out until the environment protection is in place —
+  # an accidental `git push --tags` must not be able to publish.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "publish" to confirm you intend to publish to npm.'
+        required: true
+        type: string
+  # push:
+  #   tags:
+  #     - "sdk-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Publishing is never concurrent with itself. No cancel-in-progress: a
+  # half-finished publish must not be raced by a second one.
+  group: release-sdk
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Verify the exact commit is releasable before anything touches npm.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify release gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Publish the commit that was verified, not whatever the branch moved to.
+          fetch-depth: 0
+
+      - name: Check manual confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ inputs.confirm }}" != "publish" ]; then
+            echo "::error::Confirmation input must be exactly 'publish'. Got: '${{ inputs.confirm }}'"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all packages)
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # The full suite, including apps/web. `prepublishOnly` runs only the SDK's
+      # own tests, so drift in the web app would not block a publish from there.
+      # This step is the reason the workflow exists rather than trusting npm.
+      - name: Unit tests (all packages)
+        run: pnpm test
+
+      # Contract assertion is part of the publish gate for the same reason:
+      # a published SDK whose wire types disagree with the server is broken for
+      # every consumer, and no amount of SDK-local passing tests would show it.
+      - name: Verify SDK/server contract
+        run: |
+          pnpm --filter @hextrail/sdk build
+          pnpm --filter @hextrail/web typecheck
+          pnpm --filter @hextrail/web exec vitest run src/lib/ingestion/schema.test.ts
+
+      - name: Verify package is releasable
+        # The same gate CI runs. Asserts exports, declarations, files, README and
+        # LICENSE, version, absence of secrets/tests/fixtures/workspace deps, and
+        # that the tarball installs and type-checks in a clean project.
+        run: node scripts/release-check.mjs
+
+  # ---------------------------------------------------------------------------
+  # Publish. Bound to the `npm-release` environment so a human approves here,
+  # and so the OIDC identity npm trusts is scoped to this job alone.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to npm (Trusted Publishing)
+    runs-on: ubuntu-latest
+    needs: verify
+    environment:
+      # Requires a GitHub Environment named `npm-release` with required
+      # reviewers configured. Without it, this job cannot start.
+      name: npm-release
+      url: https://www.npmjs.com/package/@hextrail/sdk
+    permissions:
+      contents: read
+      # The only reason to request this scope. Nothing in this job writes a
+      # secret to disk; npm exchanges the OIDC token directly.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted Publishing requires npm >= 11.5.1, which ships with Node 24
+          # and later. Node 22's bundled npm is older; the upgrade step below
+          # makes the requirement explicit rather than version-dependent.
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for Trusted Publishing support
+        run: npm install --global npm@latest
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the SDK
+        run: pnpm --filter @hextrail/sdk build
+
+      - name: Confirm the version is not already published
+        # `npm view` exits non-zero when the version does not exist, which is the
+        # case we want. Republishing an existing version always fails, but
+        # failing here gives a clear message before the approval gate is crossed.
+        run: |
+          VERSION=$(node -p "require('./packages/sdk/package.json').version")
+          echo "Preparing to publish @hextrail/sdk@$VERSION"
+          if npm view "@hextrail/sdk@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@hextrail/sdk@$VERSION is already published. Bump the version first."
+            exit 1
+          fi
+          echo "Version $VERSION is unpublished. Proceeding."
+
+      - name: Publish
+        # No NODE_AUTH_TOKEN. `--provenance` attaches a signed build attestation
+        # linking the tarball to this commit and workflow run.
+        working-directory: packages/sdk
+        run: npm publish --provenance --access public
+
+      - name: Summary
+        run: |
+          VERSION=$(node -p "require('./packages/sdk/package.json').version")
+          {
+            echo "### Published \`@hextrail/sdk@$VERSION\`"
+            echo ""
+            echo "- https://www.npmjs.com/package/@hextrail/sdk/v/$VERSION"
+            echo "- Provenance attestation attached by \`npm publish --provenance\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
